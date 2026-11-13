@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 
 import generadores as gen
+import pruebas
 
 # Paleta neutra
 C = {
@@ -98,6 +99,11 @@ class PestanaMetodo(ttk.Frame):
             caja.pack(side="left", padx=(0, 26))
             ttk.Label(caja, text=nombre, style="Suave.TLabel").pack(anchor="w")
             ttk.Label(caja, text=str(valor), style="Valor.TLabel").pack(anchor="w")
+        # Botón "Pruebas" al final del cuadro de parámetros
+        ttk.Button(self.marco_params, text="Pruebas", style="Acento.TButton",
+                   command=self._abrir_pruebas).pack(side="right")
+        self._res = res
+        self.lbl_notas.configure(text="\n".join("• " + t for t in res.notas))
         self.lbl_notas.configure(text="\n".join("• " + t for t in res.notas))
 
         # Tabla
@@ -124,6 +130,107 @@ class PestanaMetodo(ttk.Frame):
         self.clipboard_clear()
         self.clipboard_append("\n".join(getattr(self, "_numeros", [])))
 
+    def _abrir_pruebas(self):
+        VentanaPruebas(self.winfo_toplevel(), self._res)
+
+class VentanaPruebas(tk.Toplevel):
+    """Ventana con las pruebas de uniformidad aplicadas a los ri generados."""
+
+    def __init__(self, master, resultado):
+        super().__init__(master)
+        self.title(f"Pruebas de uniformidad - {resultado.nombre}")
+        self.geometry("920x700")
+        self.minsize(760, 560)
+        self.configure(bg=C["fondo"])
+        self.numeros = resultado.numeros
+        self.alpha_var = tk.StringVar(value="0.05")
+
+        cab = ttk.Frame(self, style="Panel.TFrame", padding=(18, 14))
+        cab.pack(fill="x", padx=20, pady=(16, 10))
+        ttk.Label(cab, text="Pruebas de uniformidad", style="Titulo.TLabel").pack(anchor="w")
+        ttk.Label(cab, text=f"{resultado.nombre}  ·  n = {len(self.numeros)} números",
+                  style="Suave.TLabel").pack(anchor="w", pady=(2, 10))
+        fila = ttk.Frame(cab, style="Panel.TFrame")
+        fila.pack(anchor="w")
+        ttk.Label(fila, text="Nivel de significancia (α):", style="Panel.TLabel").pack(side="left")
+        combo = ttk.Combobox(fila, textvariable=self.alpha_var, width=6, state="readonly",
+                             values=("0.10", "0.05", "0.01"))
+        combo.pack(side="left", padx=8)
+        combo.bind("<<ComboboxSelected>>", lambda e: self._calcular())
+
+        self.nb = ttk.Notebook(self)
+        self.nb.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        self.chi = self._pestana("Chi-cuadrada")
+        self.ks = self._pestana("Kolmogorov-Smirnov")
+        self._calcular()
+
+    def _pestana(self, titulo):
+        marco = ttk.Frame(self.nb, style="Panel.TFrame", padding=16)
+        self.nb.add(marco, text=titulo)
+        resumen = ttk.Label(marco, text="", style="Suave.TLabel", justify="left", wraplength=840)
+        resumen.pack(anchor="w", fill="x", pady=(0, 10))
+        cont = ttk.Frame(marco, style="Panel.TFrame")
+        cont.pack(fill="both", expand=True)
+        tabla = ttk.Treeview(cont, show="headings", height=10)
+        sb = ttk.Scrollbar(cont, orient="vertical", command=tabla.yview)
+        tabla.configure(yscrollcommand=sb.set)
+        tabla.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        tabla.tag_configure("alt", background=C["fila_alt"])
+        tabla.tag_configure("total", background=C["seleccion"])
+        concl = ttk.Label(marco, text="", style="Resultado.TLabel", justify="left", wraplength=840)
+        concl.pack(anchor="w", fill="x", pady=(12, 0))
+        return {"resumen": resumen, "tabla": tabla, "concl": concl}
+
+    @staticmethod
+    def _llenar(tabla, columnas, filas, total=None):
+        tabla.delete(*tabla.get_children())
+        tabla["columns"] = columnas
+        for col in columnas:
+            tabla.heading(col, text=col)
+            tabla.column(col, anchor="center", width=130, stretch=True)
+        for k, f in enumerate(filas):
+            tabla.insert("", "end", values=f, tags=("alt",) if k % 2 else ())
+        if total:
+            tabla.insert("", "end", values=total, tags=("total",))
+
+    def _calcular(self):
+        alpha = float(self.alpha_var.get())
+
+        # --- Chi-cuadrada ---
+        c = pruebas.chi_cuadrada(self.numeros, alpha)
+        self.chi["resumen"].configure(text=(
+            f"El intervalo (0, 1) se divide en m = √n ≈ {c['m']} sub-intervalos; "
+            f"frecuencia esperada Ei = n/m = {c['E']:.4f}; grados de libertad = m − 1 = {c['gl']}.\n"
+            f"Estadístico: χ²₀ = Σ (Ei − Oi)² / Ei"))
+        self._llenar(self.chi["tabla"], c["columnas"], c["filas"],
+                     total=("Σ", c["n"], f"{c['n']:.4f}", f"{c['chi0']:.4f}"))
+        signo = "<" if c["acepta"] else "≥"
+        veredicto = ("No se puede rechazar que los números ri sigan una distribución uniforme."
+                     if c["acepta"] else
+                     "Se rechaza que los números ri sigan una distribución uniforme.")
+        self.chi["concl"].configure(text=(
+            f"χ²₀ = {c['chi0']:.4f}  {signo}  χ²(α={alpha:.2f}, {c['gl']}) = {c['critico']:.4f}\n"
+            f"{veredicto}"))
+
+        # --- Kolmogorov-Smirnov ---
+        k = pruebas.kolmogorov_smirnov(self.numeros, alpha)
+        aviso = ("\nNota: esta prueba se recomienda para conjuntos pequeños (n < 20)."
+                 if k["n"] >= 20 else "")
+        self.ks["resumen"].configure(text=(
+            "Se ordenan los ri de menor a mayor y se calculan: D⁺ = máx{ i/n − ri },  "
+            "D⁻ = máx{ ri − (i−1)/n },  D = máx{ D⁺, D⁻ }." + aviso))
+        self._llenar(self.ks["tabla"], k["columnas"], k["filas"])
+        if k["acepta"]:
+            veredicto = ("No se ha detectado diferencia significativa entre la distribución de "
+                         "los números ri y la distribución uniforme.")
+            signo = "≤"
+        else:
+            veredicto = "Los números ri no siguen una distribución uniforme."
+            signo = ">"
+        self.ks["concl"].configure(text=(
+            f"D⁺ = {k['d_mas']:.4f}   D⁻ = {k['d_menos']:.4f}   D = {k['d']:.4f}  {signo}  "
+            f"Dα (α={alpha:.2f}, n={k['n']}) = {k['critico']:.4f}\n{veredicto}"))
 
 class App(tk.Tk):
     def __init__(self):
@@ -186,3 +293,6 @@ class App(tk.Tk):
         s.map("Treeview", background=[("selected", C["seleccion"])],
               foreground=[("selected", C["texto"])])
         s.configure("TSpinbox", fieldbackground="white", background=C["panel"])
+        s.configure("TCombobox", fieldbackground="white", background=C["panel"])
+        s.configure("Resultado.TLabel", background=C["panel"], foreground=C["texto"],
+                    font=("Segoe UI Semibold", 11))
